@@ -1,0 +1,207 @@
+version: '3.8'
+
+services:
+  #minio as S3 storage for blob
+  minio:
+    image: minio/minio:latest
+    container_name: minio
+    ports:
+      - "9000:9000"
+    environment:
+      - MINIO_ACCESS_KEY=minio
+      - MINIO_SECRET_KEY=minio123
+    volumes:
+      - ./minio/data:/data
+    command: server /data
+    networks:
+      - my_network
+
+  # PostgreSQL for User Service
+  postgres_user:
+    image: postgres:13
+    container_name: postgres_user
+    environment:
+      - POSTGRES_USER=admin
+      - POSTGRES_PASSWORD=admin
+      - POSTGRES_DB=user_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_user_data:/var/lib/postgresql/data
+    networks:
+      - my_network
+
+  # PostgreSQL for Music Catalog Service
+  postgres_music:
+    image: postgres:13
+    container_name: postgres_music
+    environment:
+      - POSTGRES_USER=admin
+      - POSTGRES_PASSWORD=admin
+      - POSTGRES_DB=music_db
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_music_data:/var/lib/postgresql/data
+    networks:
+      - my_network
+
+  # Redis for Notification Service
+  redis:
+    image: redis:alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+    networks:
+      - my_network
+
+  # Kafka
+  kafka:
+    image: bitnami/kafka:latest
+    container_name: kafka
+    environment:
+      - KAFKA_ENABLE_KRAFT=yes
+      - KAFKA_CFG_NODE_ID=1
+      - KAFKA_CFG_PROCESS_ROLES=controller,broker
+      - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=1@kafka:9093
+      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092
+      - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - KAFKA_CFG_LOG_DIRS=/var/lib/kafka/data
+      - KAFKA_CLUSTER_ID=wlXvkcQlSOO5N-5ve37oAQ
+    ports:
+      - "9092:9092"
+    volumes:
+      - ./kafka-data:/var/lib/kafka/data  # Persist Kafka data
+    networks:
+      - my_network
+
+  # User Service
+  user-service:
+    build: ./user-service
+    container_name: user-service
+    ports:
+      - "8081:8081"
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres_user:5432/user_db
+      - SPRING_DATASOURCE_USERNAME=admin
+      - SPRING_DATASOURCE_PASSWORD=admin
+    depends_on:
+      - postgres_user
+      - logstash
+    networks:
+      - my_network
+
+  # Music Catalog Service
+  music-catalog-service:
+    build: ./music-catalog-service
+    container_name: music-catalog-service
+    ports:
+      - "8082:8082"
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres_music:5432/music_db
+      - SPRING_DATASOURCE_USERNAME=admin
+      - SPRING_DATASOURCE_PASSWORD=admin
+    depends_on:
+      - postgres_music
+      - logstash
+    networks:
+      - my_network
+
+  # Recommendation Service
+  recommendation-service:
+    build: ./recommendation-service
+    container_name: recommendation-service
+    ports:
+      - "8083:8083"
+    depends_on:
+      - kafka
+      - logstash
+    environment:
+      - KAFKA_BROKER=kafka:9092
+    networks:
+      - my_network
+
+  # Notification Service
+  notification-service:
+    build: ./notification-service
+    container_name: notification-service
+    ports:
+      - "8084:8084"
+    depends_on:
+      - redis
+      - logstash
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    networks:
+      - my_network
+
+  # Streaming Service
+  streaming-service:
+    build: ./streaming-service
+    container_name: streaming-service
+    ports:
+      - "8085:8085"
+    environment:
+      - MINIO_URL=minio:9000
+      - MINIO_ACCESS_KEY=minio
+      - MINIO_SECRET_KEY=minio123
+    depends_on:
+      - minio
+      - logstash
+    networks:
+      - my_network
+
+  # Elasticsearch - Store logs
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.17.4
+    container_name: elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+    ports:
+      - "9200:9200"
+    networks:
+      - my_network
+
+  # Logstash - send logs
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.17.4
+    container_name: logstash
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    volumes:
+      - ./logstash/pipeline:/usr/share/logstash/pipeline
+    ports:
+      - "5044:5044"  # For receiving logs from Filebeat
+      - "5001:5000/tcp"  # For TCP logs
+      - "5001:5000/udp"
+      - "9600:9600"  # Monitoring API
+    depends_on:
+      - elasticsearch
+    networks:
+      - my_network
+
+  # Kibana - UI for logs
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.17.4
+    container_name: kibana
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    ports:
+      - "5601:5601"
+    depends_on:
+      - elasticsearch
+    networks:
+      - my_network
+
+volumes:
+  postgres_user_data:
+    driver: local
+  postgres_music_data:
+    driver: local
+
+networks:
+  my_network:
+    driver: bridge
