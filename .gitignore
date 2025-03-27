@@ -26,3 +26,7 @@ replay_pid*
 #OS Files
 .DS_Store
 .idea
+
+### Ignore data folders
+/kafka-data/
+/minio/
